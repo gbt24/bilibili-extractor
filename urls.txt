@@ -1,0 +1,7 @@
+# Bilibili 视频链接列表，一行一个
+# 支持普通视频链接：
+#   https://www.bilibili.com/video/BV1xx411c7mD
+#
+# 支持合集/播放列表链接（会自动展开为所有视频并合并结果）：
+#   https://space.bilibili.com/123456/channel/collectiondetail?sid=789
+#   https://www.bilibili.com/medialist/play/123456?business_id=789
