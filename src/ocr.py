@@ -1,7 +1,9 @@
-"""PaddleOCR wrapper for frame text extraction. Supports CPU and GPU."""
+"""PaddleOCR wrapper for frame text extraction. Supports CPU and GPU.
+
+Auto-detects PaddleOCR v2 (list-of-tuples) vs v3 (dict-based, PaddleX).
+"""
 
 import os
-from pathlib import Path
 
 
 def recognize_frames(
@@ -9,21 +11,13 @@ def recognize_frames(
     device: str = "cpu",
     lang: str = "ch",
 ) -> dict[str, list[dict]]:
-    """Run PaddleOCR on a list of frame images.
-
-    Args:
-        frame_paths: List of absolute paths to frame images.
-        device: 'cpu' or 'gpu'.
-        lang: Language code, 'ch' for Chinese.
-
-    Returns:
-        Dict mapping frame filename -> list of {'text': str, 'confidence': float}.
-        Failed frames contain {'error': str} instead.
-    """
     from paddleocr import PaddleOCR
 
-    use_gpu = device == "gpu"
-    ocr = PaddleOCR(lang=lang, use_gpu=use_gpu)
+    # v3 (PaddleX) doesn't accept lang=/use_gpu=; v2 does
+    try:
+        ocr = PaddleOCR(lang=lang, use_gpu=(device == "gpu"))
+    except (TypeError, ValueError):
+        ocr = PaddleOCR()
 
     results: dict[str, list[dict]] = {}
     for fpath in frame_paths:
@@ -31,13 +25,29 @@ def recognize_frames(
         try:
             raw = ocr.ocr(fpath)
             lines: list[dict] = []
-            if raw and raw[0]:
-                for item in raw[0]:
-                    if len(item) == 2:
-                        _box, (text, conf) = item
-                        lines.append({"text": text, "confidence": float(conf)})
-                    elif isinstance(item, dict):
-                        lines.append(item)
+
+            if raw and isinstance(raw, list):
+                page = raw[0]
+
+                if isinstance(page, dict):
+                    # ── PaddleOCR v3 (dict-based) ──
+                    rec_texts = page.get("rec_texts", [])
+                    rec_scores = page.get("rec_scores", [])
+                    for i, text in enumerate(rec_texts):
+                        conf = rec_scores[i] if i < len(rec_scores) else 1.0
+                        if text:
+                            lines.append({"text": str(text), "confidence": float(conf)})
+                elif isinstance(page, list):
+                    # ── PaddleOCR v2 (list-of-tuples) ──
+                    for item in page:
+                        if len(item) == 2:
+                            _box, (text, conf) = item
+                            lines.append({"text": text, "confidence": float(conf)})
+                        elif isinstance(item, dict):
+                            t = item.get("rec_text", item.get("text", ""))
+                            if t:
+                                lines.append({"text": str(t), "confidence": float(item.get("rec_score", 1.0))})
+
             results[fname] = lines
         except Exception as exc:
             results[fname] = [{"error": str(exc)}]
@@ -45,7 +55,6 @@ def recognize_frames(
 
 
 def format_ocr_results(results: dict[str, list[dict]]) -> str:
-    """Format OCR results dictionary into a readable string for the LLM prompt."""
     lines: list[str] = []
     for fname in sorted(results.keys()):
         entries = results[fname]

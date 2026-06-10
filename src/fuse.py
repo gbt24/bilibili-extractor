@@ -49,10 +49,11 @@ def fuse(
         )
 
     template = load_prompt_template()
-    prompt = template.format(
-        transcript=transcript,
-        ocr_results=ocr_text,
-        vision_results=vision_text or "(无视觉描述)",
+    prompt = (
+        template
+        .replace("{transcript}", transcript)
+        .replace("{ocr_results}", ocr_text)
+        .replace("{vision_results}", vision_text or "(无视觉描述)")
     )
 
     if model is None:
@@ -101,14 +102,36 @@ def fuse(
 
 
 def _parse_json_response(content: str) -> list[dict]:
-    """Parse JSON array from LLM response, handling ``` fences."""
+    """Parse JSON array from LLM response, handling ``` fences and common issues."""
     text = content.strip()
-    # Remove ```json ... ``` fences if present
+
+    # Remove ```json ... ``` fences
     if text.startswith("```"):
         lines = text.split("\n")
         if lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        text = "\n".join(lines)
-    return json.loads(text)
+        text = "\n".join(lines).strip()
+
+    # Remove BOM, invisible chars
+    text = text.lstrip("\ufeff")
+
+    # Try to extract JSON array if mixed with surrounding text
+    if not text.startswith("["):
+        import re
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        if m:
+            text = m.group(0)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Print raw response for debugging
+        print(f"        [DEBUG] Raw LLM response (first 2000 chars):")
+        print(f"        {content[:2000]}")
+        print(f"        [DEBUG] Parsed text (first 2000 chars):")
+        print(f"        {text[:2000]}")
+        raise RuntimeError(
+            f"Failed to parse DeepSeek response as JSON. Parse error: {exc}"
+        )

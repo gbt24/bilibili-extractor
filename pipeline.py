@@ -22,7 +22,6 @@ from src.config import load_config, RuntimeConfig
 from src.bilibili import (
     get_video_info,
     download_audio,
-    get_stream_url,
     get_video_id,
     get_bv_id,
     expand_url,
@@ -218,8 +217,7 @@ def process_video(
     frames_dir = vid_work_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
     try:
-        stream_url = get_stream_url(url, args.quality)
-        frame_paths = extract_frames(stream_url, str(frames_dir), fps=args.fps)
+        frame_paths = extract_frames(url, str(frames_dir), fps=args.fps)
         print(f"        Kept {len(frame_paths)} frames (after dedup)")
     except Exception as e:
         print(f"        ERROR: {e}")

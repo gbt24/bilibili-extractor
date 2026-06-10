@@ -1,56 +1,100 @@
-"""Video keyframe extraction via ffmpeg with perceptual-hash dedup."""
+"""Video keyframe extraction — downloads small temp video for reliable extraction."""
 
 import os
 import subprocess
+import tempfile
+
 from PIL import Image
 import imagehash
 
 
 def extract_frames(
-    stream_url: str,
+    bilibili_url: str,
     output_dir: str,
     fps: float = 1.0 / 3.0,
     max_width: int = 1280,
 ) -> list[str]:
-    """Extract frames from a video stream at fixed interval.
+    """Extract frames from a Bilibili video at fixed interval.
 
-    Uses perceptual hash to deduplicate near-identical frames.
-    Returns sorted list of kept frame paths.
+    Downloads a low-res video temp file (~10-25 MB for 7-min video)
+    for reliable extraction, then deletes it immediately.
     """
+    from src.bilibili import _COOKIE_BROWSER, _COOKIE_FILE, _HEADER_ARGS
+
     os.makedirs(output_dir, exist_ok=True)
     pattern = os.path.join(output_dir, "frame_%04d.jpg")
 
-    cmd = [
-        "ffmpeg",
-        "-i", stream_url,
-        "-vf", f"fps={fps},scale={max_width}:-1",
-        "-vsync", "vfr",
-        "-q:v", "2",
-        "-threads", "0",
-        "-y",
-        pattern,
-    ]
+    # Build yt-dlp command with cookies / headers
+    ytdlp = ["yt-dlp", "--no-playlist", "--no-mtime"]
+    if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
+        ytdlp += ["--cookies", _COOKIE_FILE]
+    elif _COOKIE_BROWSER:
+        ytdlp += ["--cookies-from-browser", _COOKIE_BROWSER]
+    ytdlp += _HEADER_ARGS
 
-    subprocess.run(cmd, capture_output=True, check=True)
+    # Download smallest usable video stream as temp file
+    import uuid
+    tmp_video = os.path.join(tempfile.gettempdir(), f"bili_{uuid.uuid4().hex}.mp4")
 
-    # Deduplicate
-    _deduplicate(output_dir, threshold=5)
+    try:
+        dl = subprocess.run(
+            ytdlp + [
+                "-f", "worstvideo[height<=480]+worstaudio/worst[height<=480]",
+                "-o", tmp_video,
+                bilibili_url,
+            ],
+            capture_output=True, text=True, timeout=300,
+        )
+        if dl.returncode != 0:
+            # Fallback: try just worstvideo without audio
+            dl2 = subprocess.run(
+                ytdlp + [
+                    "-f", "worstvideo[height<=480]",
+                    "-o", tmp_video,
+                    bilibili_url,
+                ],
+                capture_output=True, text=True, timeout=300,
+            )
+            if dl2.returncode != 0:
+                stderr = (dl.stderr + dl2.stderr).strip()[:300]
+                raise RuntimeError(f"Download failed: {stderr}")
+
+        # Extract frames from temp video
+        ffmpeg = subprocess.run([
+            "ffmpeg", "-i", tmp_video,
+            "-vf", f"fps={fps},scale={max_width}:-1",
+            "-vsync", "vfr", "-q:v", "2", "-threads", "0",
+            "-y", pattern,
+        ], capture_output=True, text=True)
+
+    finally:
+        os.remove(tmp_video)
 
     frames = sorted(
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     )
-    return frames
+
+    if not frames:
+        raise RuntimeError(
+            f"No frames extracted. ffmpeg: {ffmpeg.stderr.strip()[:300]}"
+        )
+
+    _deduplicate(output_dir, threshold=5)
+
+    return sorted(
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
 
 
 def _deduplicate(frames_dir: str, threshold: int = 5) -> None:
-    """Remove near-duplicate frames using perceptual hash (pHash).
-
-    Frames with hamming distance <= threshold are considered duplicates.
-    The first occurrence is kept.
-    """
-    files = sorted(f for f in os.listdir(frames_dir) if f.lower().endswith((".jpg", ".jpeg", ".png")))
+    files = sorted(
+        f for f in os.listdir(frames_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
     if len(files) <= 1:
         return
 
