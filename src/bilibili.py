@@ -5,13 +5,11 @@ import os
 import platform
 import re
 import subprocess
-import sys
 
 
-# ── Browser cookie auto-detection ──────────────────────────────
+# ── Browser / cookie detection ──────────────────────────────────
 
 def _detect_browser() -> str | None:
-    """Detect an installed browser with Bilibili cookies."""
     candidates = {
         "Darwin": ["chrome", "safari", "firefox", "edge"],
         "Windows": ["chrome", "edge", "firefox", "brave"],
@@ -48,13 +46,19 @@ def _browser_available(browser: str) -> bool:
     return True
 
 
-# ── yt-dlp runner with auto cookie-fallback ────────────────────
+# ── yt-dlp runner ───────────────────────────────────────────────
 
 _COOKIE_BROWSER: str | None = None
+_COOKIE_FILE: str | None = None
+
 _HEADER_ARGS = [
-    "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "--add-header",
+    "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "--add-header", "Referer:https://www.bilibili.com/",
 ]
+
+_BYPASS_ARGS = ["--force-ipv4"]
 
 
 def set_cookies_browser(browser: str | None) -> None:
@@ -62,37 +66,59 @@ def set_cookies_browser(browser: str | None) -> None:
     _COOKIE_BROWSER = browser
 
 
-def _run_ytdlp(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run yt-dlp. Tries with browser cookies first; falls back to headers-only on failure."""
-    browser = _COOKIE_BROWSER or _detect_browser()
+def set_cookies_file(path: str | None) -> None:
+    global _COOKIE_FILE
+    _COOKIE_FILE = path
 
-    # ── Attempt 1: with browser cookies ──
-    if browser:
-        cmd = ["yt-dlp", "--cookies-from-browser", browser] + _HEADER_ARGS + args
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+def _build_cmd(args: list[str]) -> list[str]:
+    """Build yt-dlp command with the best available auth method."""
+    cmd = ["yt-dlp"]
+
+    # Priority: cookie file → browser cookies → nothing (headers only)
+    if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
+        cmd += ["--cookies", _COOKIE_FILE]
+    elif _COOKIE_BROWSER or _detect_browser():
+        browser = _COOKIE_BROWSER or _detect_browser()
+        cmd += ["--cookies-from-browser", browser]
+
+    return cmd + _HEADER_ARGS + _BYPASS_ARGS + args
+
+
+def _run_ytdlp(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    """Run yt-dlp with best auth, retrying with less auth on failure."""
+    cmd = _build_cmd(args)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode == 0:
+        return result
+
+    stderr = result.stderr.strip()
+
+    # Cookie DB locked → retry without browser cookies (use cookie file or headers)
+    if "cookie" in stderr.lower() or "locked" in stderr.lower():
+        print(f"        Cookie DB locked, retrying without browser cookies...")
+        cmd2 = ["yt-dlp"] + _HEADER_ARGS + _BYPASS_ARGS + args
+        if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
+            cmd2 = ["yt-dlp", "--cookies", _COOKIE_FILE] + _HEADER_ARGS + _BYPASS_ARGS + args
+        result = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout)
         if result.returncode == 0:
             return result
         stderr = result.stderr.strip()
-        # Cookie DB locked by running browser → retry without cookies
-        if "cookie" in stderr.lower() or "copy" in stderr.lower() or "locked" in stderr.lower():
-            print(f"        Cookie warning: browser DB locked, retrying without cookies...")
-        else:
-            raise RuntimeError(f"yt-dlp failed: {stderr}")
 
-    # ── Attempt 2: headers only (no cookies) ──
-    cmd = ["yt-dlp"] + _HEADER_ARGS + args
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        msg = result.stderr.strip()
-        if "412" in msg or "Precondition" in msg:
-            raise RuntimeError(
-                "Bilibili blocked the request (412). Solutions:\n"
-                "  1. Close Chrome/Edge completely before running\n"
-                "  2. Or login to Bilibili in your browser first\n"
-                f"  Details: {msg}"
-            )
-        raise RuntimeError(f"yt-dlp failed: {msg}")
-    return result
+    # 412 / blocked
+    if "412" in stderr or "Precondition" in stderr:
+        raise RuntimeError(
+            "Bilibili blocked the request (412). Solutions:\n"
+            "  1. Close Chrome/Edge COMPLETELY, then run:\n"
+            "     python pipeline.py --cookies-browser chrome\n"
+            "  2. Or export cookies as txt file:\n"
+            "     Install 'Get cookies.txt LOCALLY' browser extension\n"
+            "     Export bilibili.com cookies → cookies.txt\n"
+            "     python pipeline.py --cookies-file cookies.txt\n"
+            f"  Details: {stderr}"
+        )
+
+    raise RuntimeError(f"yt-dlp failed: {stderr}")
 
 
 # ── URL helpers ─────────────────────────────────────────────────

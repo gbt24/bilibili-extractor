@@ -27,6 +27,7 @@ from src.bilibili import (
     get_bv_id,
     expand_url,
     set_cookies_browser,
+    set_cookies_file,
 )
 from src.transcribe import transcribe, read_srt
 from src.frames import extract_frames
@@ -84,6 +85,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--cookies-browser", default=None,
         help="Browser to extract Bilibili cookies from (chrome, edge, firefox, safari)",
+    )
+    p.add_argument(
+        "--cookies-file", default=None,
+        help="Path to Netscape-format cookie file (export from browser extension)",
     )
     return p.parse_args()
 
@@ -297,6 +302,7 @@ def main() -> None:
     args = parse_args()
 
     set_cookies_browser(args.cookies_browser)
+    set_cookies_file(args.cookies_file)
 
     cfg = load_config(
         model_path=args.model_path,
