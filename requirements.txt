@@ -3,3 +3,4 @@ imagehash
 pillow
 paddlepaddle
 paddleocr
+faster-whisper

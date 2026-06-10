@@ -62,36 +62,24 @@ def windows_setup() -> None:
         pass
 
     print(f"Detected Windows ({'NVIDIA GPU' if has_cuda else 'no GPU'}).\n")
-    print("Manual installation steps:\n")
+    print("Installation steps:\n")
     print("1. Install ffmpeg:")
     print("   winget install ffmpeg")
-    print("   (or download from https://ffmpeg.org)")
     print()
-    print("2. Install yt-dlp:")
-    print("   pip install yt-dlp")
+    print("2. Install Python dependencies:")
+    print("   pip install yt-dlp paddlepaddle-gpu paddleocr faster-whisper imagehash httpx pillow")
+    if not has_cuda:
+        print("   (no GPU detected → use paddlepaddle instead of paddlepaddle-gpu)")
     print()
-    print("3. Install whisper.cpp:")
-    print("   Download from https://github.com/ggerganov/whisper.cpp/releases")
-    if has_cuda:
-        print("   Use the CUDA-enabled build (whisper-cublas).")
+    print("3. Set your DeepSeek API key:")
+    print('   [Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-xxx", "User")')
     print()
-    print("4. Install Python dependencies:")
-    if has_cuda:
-        print("   pip install paddlepaddle-gpu paddleocr imagehash httpx pillow")
-    else:
-        print("   pip install paddlepaddle paddleocr imagehash httpx pillow")
+    print("4. Add Bilibili URLs to urls.txt")
     print()
-    print("5. Download a whisper model:")
-    print("   https://huggingface.co/ggerganov/whisper.cpp")
-    print("   (recommended: ggml-large-v3-turbo.bin)")
+    print("5. Run:")
+    print("   python pipeline.py")
     print()
-    print("6. Set your DeepSeek API key:")
-    print('   set DEEPSEEK_API_KEY=sk-xxx')
-    print()
-    print("7. Add Bilibili URLs to urls.txt")
-    print()
-    print("8. Run:")
-    print("   python pipeline.py --model-path C:\\path\\to\\model.bin")
+    print("   faster-whisper will auto-download the large-v3 model on first run (~3GB).")
 
 
 _IS_WSL = False
@@ -123,38 +111,36 @@ def linux_setup() -> None:
     print("   pip install yt-dlp")
     print()
 
-    print("3. Compile whisper.cpp:")
-    print("   git clone https://github.com/ggerganov/whisper.cpp")
-    print("   cd whisper.cpp")
+    print("3. Transcribe backend (pick one):")
+    print("   a) faster-whisper (recommended, no compilation):")
+    print("      pip install faster-whisper")
+    print("   b) whisper.cpp (compile from source):")
+    print("      git clone https://github.com/ggerganov/whisper.cpp")
+    print("      cd whisper.cpp")
     if has_cuda:
-        print("   cmake -B build -DGGML_CUDA=ON")
+        print("      cmake -B build -DGGML_CUDA=ON")
     else:
-        print("   cmake -B build")
-    print("   cmake --build build -j --config Release")
-    print("   sudo cp build/bin/whisper-cli /usr/local/bin/")
+        print("      cmake -B build")
+    print("      cmake --build build -j --config Release")
+    print("      sudo cp build/bin/whisper-cli /usr/local/bin/")
     print()
 
     print("4. Install Python dependencies:")
     if has_cuda:
-        print("   pip install paddlepaddle-gpu paddleocr imagehash httpx pillow")
+        print("   pip install paddlepaddle-gpu paddleocr imagehash httpx pillow yt-dlp")
     else:
-        print("   pip install paddlepaddle paddleocr imagehash httpx pillow")
+        print("   pip install paddlepaddle paddleocr imagehash httpx pillow yt-dlp")
     print()
 
-    print("5. Download a whisper model:")
-    print("   https://huggingface.co/ggerganov/whisper.cpp")
-    print("   (recommended: ggml-large-v3-turbo.bin)")
-    print()
-
-    print("6. Set your DeepSeek API key:")
+    print("5. Set your DeepSeek API key:")
     print('   export DEEPSEEK_API_KEY="sk-xxx"')
     print()
 
-    print("7. Add Bilibili URLs to urls.txt")
+    print("6. Add Bilibili URLs to urls.txt")
     print()
 
-    print("8. Run:")
-    print("   python pipeline.py --model-path /path/to/ggml-large-v3-turbo.bin")
+    print("7. Run:")
+    print("   python pipeline.py")
 
 
 def main() -> None:

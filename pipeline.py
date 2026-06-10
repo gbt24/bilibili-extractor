@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--model-path", default=None,
-        help="Path to whisper.cpp model (.bin)",
+        help="Path to whisper.cpp model (.bin) or faster-whisper model name (e.g. large-v3)",
     )
     p.add_argument(
         "--model-dir", default=None,
@@ -184,7 +184,9 @@ def process_video(
     t0 = time.time()
     try:
         srt_path = transcribe(
-            audio_path, cfg.whisper_model, str(vid_work_dir)
+            audio_path,
+            model_path=cfg.whisper_model,
+            output_dir=str(vid_work_dir),
         )
         print(f"        Done in {time.time()-t0:.1f}s")
     except Exception as e:
