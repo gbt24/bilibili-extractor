@@ -4,7 +4,9 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
+import tempfile
 
 
 # ── Browser / cookie detection ──────────────────────────────────
@@ -78,7 +80,6 @@ def _build_cmd(args: list[str]) -> list[str]:
     # Priority: cookie file → browser cookies → nothing (headers only)
     if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
         # Copy to temp — yt-dlp writes back to the file, which would corrupt it
-        import tempfile
         _COOKIE_FILE_COPY = os.path.join(
             tempfile.gettempdir(), "bili_cookies_" + os.path.basename(_COOKIE_FILE)
         )
