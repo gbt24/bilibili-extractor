@@ -1,6 +1,7 @@
 httpx
 imagehash
 pillow
+openai
 paddlepaddle
 paddleocr
 faster-whisper

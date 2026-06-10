@@ -31,6 +31,7 @@ from src.transcribe import transcribe, read_srt
 from src.frames import extract_frames
 from src.ocr import recognize_frames, format_ocr_results
 from src.fuse import fuse
+from src.vision import describe_frames, format_vision_results
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -74,6 +75,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-merge", action="store_true",
         help="Do not merge collection results into a single JSON",
+    )
+    p.add_argument(
+        "--no-vision", action="store_true",
+        help="Skip multimodal vision description (faster, cheaper)",
     )
     return p.parse_args()
 
@@ -162,7 +167,7 @@ def process_video(
     print(f"{'='*60}")
 
     # ── 1. Metadata ──────────────────────────────────────────
-    print("  [1/6] Fetching video info...")
+    print("  [1/7] Fetching video info...")
     try:
         info = get_video_info(url)
         print(f"        Title: {info['title']}")
@@ -172,7 +177,7 @@ def process_video(
         return None
 
     # ── 2. Audio → Whisper ───────────────────────────────────
-    print("  [2/6] Downloading audio...")
+    print("  [2/7] Downloading audio...")
     try:
         audio_path = download_audio(url, str(vid_work_dir))
         print(f"        Audio: {audio_path}  ({os.path.getsize(audio_path)/1e6:.1f} MB)")
@@ -180,7 +185,7 @@ def process_video(
         print(f"        ERROR: {e}")
         return None
 
-    print("  [3/6] Transcribing with whisper.cpp...")
+    print("  [3/7] Transcribing with whisper.cpp...")
     t0 = time.time()
     try:
         srt_path = transcribe(
@@ -198,8 +203,8 @@ def process_video(
     transcript = read_srt(srt_path)
     print(f"        Transcript: {len(transcript)} chars")
 
-    # ── 3. Frames → OCR ──────────────────────────────────────
-    print("  [4/6] Extracting frames from stream...")
+    # ── 3. Frames → OCR + Vision ──────────────────────────────
+    print("  [4/7] Extracting frames from stream...")
     frames_dir = vid_work_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
     try:
@@ -212,8 +217,9 @@ def process_video(
         frame_paths = []
 
     ocr_text = ""
+    vision_text = ""
     if frame_paths:
-        print("  [5/6] Running PaddleOCR...")
+        print("  [5/7] Running PaddleOCR...")
         t0 = time.time()
         try:
             ocr_results = recognize_frames(frame_paths, device=cfg.ocr_device)
@@ -222,18 +228,32 @@ def process_video(
         except Exception as e:
             print(f"        ERROR: {e}")
             print("        Continuing with transcript only...")
+
+        if not args.no_vision:
+            print("  [6/7] Running multimodal vision model...")
+            t0 = time.time()
+            try:
+                vision_results = describe_frames(frame_paths)
+                vision_text = format_vision_results(vision_results)
+                print(f"        Done in {time.time()-t0:.1f}s, {len(vision_text)} chars")
+            except Exception as e:
+                print(f"        ERROR: {e}")
+                print("        Continuing without vision descriptions...")
+        else:
+            print("  [6/7] Vision model skipped (--no-vision)")
     else:
-        print("  [5/6] No frames to OCR, skipping...")
+        print("  [5/7] No frames to process, skipping...")
 
     # Clean up frames
     shutil.rmtree(frames_dir, ignore_errors=True)
 
     # ── 4. DeepSeek fusion ───────────────────────────────────
-    print("  [6/6] Fusing with DeepSeek...")
+    print("  [7/7] Fusing with DeepSeek...")
     try:
         problems = fuse(
             transcript=transcript,
             ocr_text=ocr_text,
+            vision_text=vision_text,
             api_key=args.api_key,
             model=args.deepseek_model,
         )

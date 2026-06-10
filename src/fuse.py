@@ -21,6 +21,7 @@ def load_prompt_template() -> str:
 def fuse(
     transcript: str,
     ocr_text: str,
+    vision_text: str = "",
     api_key: str | None = None,
     model: str | None = None,
     temperature: float = 0.0,
@@ -48,7 +49,11 @@ def fuse(
         )
 
     template = load_prompt_template()
-    prompt = template.format(transcript=transcript, ocr_results=ocr_text)
+    prompt = template.format(
+        transcript=transcript,
+        ocr_results=ocr_text,
+        vision_results=vision_text or "(无视觉描述)",
+    )
 
     if model is None:
         model = "deepseek-v4-flash"
