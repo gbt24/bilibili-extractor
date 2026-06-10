@@ -15,17 +15,18 @@ BOOKMARKLET = """javascript:(function(){
     a[p[0].trim()]=p.slice(1).join('=');
     return a;
   },{});
-  var k=['SESSDATA','bili_jct','DedeUserID','sid'];
-  var t='# Netscape HTTP Cookie File\\n';
-  k.forEach(function(n){
-    if(c[n]) t+='.bilibili.com\\tTRUE\\t/\\tFALSE\\t9999999999\\t'+n+'\\t'+c[n]+'\\n';
-  });
+var k=['bili_jct','DedeUserID','sid'];
+var t='# Netscape HTTP Cookie File\\n';
+t+='# 注意：SESSDATA 需手动从 F12 → Application → Cookies 获取\\n';
+k.forEach(function(n){
+  if(c[n]) t+='.bilibili.com\\tTRUE\\t/\\tFALSE\\t9999999999\\t'+n+'\\t'+c[n]+'\\n';
+});
   var blob=new Blob([t],{type:'text/plain'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download='cookies.txt';
   a.click();
-  alert('cookies.txt 已下载！放入项目目录后运行：\\npython pipeline.py --cookies-file cookies.txt');
+  alert('cookies.txt 已下载！\\n\\nSESSDATA 是 HttpOnly cookie，需要手动获取：\\nF12 → Application → Cookies → bilibili.com\\n找到 SESSDATA，复制值，加到 cookies.txt 第一行');
 })();"""
 
 JS_CONSOLE = """// 在 B 站页面按 F12 → Console → 粘贴以下代码 → 回车
@@ -34,14 +35,21 @@ var c=document.cookie.split(';').reduce(function(a,v){
   a[p[0].trim()]=p.slice(1).join('=');
   return a;
 },{});
-var k=['SESSDATA','bili_jct','DedeUserID','sid'];
+var k=['bili_jct','DedeUserID','sid'];
 var t='# Netscape HTTP Cookie File\\n';
 k.forEach(function(n){
   if(c[n]) t+='.bilibili.com\\tTRUE\\t/\\tFALSE\\t9999999999\\t'+n+'\\t'+c[n]+'\\n';
 });
 console.log(t);
+console.log('---');
+console.log('SESSDATA 是 HttpOnly cookie，需要手动获取：');
+console.log('F12 → Application → Cookies → bilibili.com → 找到 SESSDATA → 双击 Value 复制');
+console.log('然后在 cookies.txt 最上面加一行：');
+console.log('.bilibili.com\\tTRUE\\t/\\tFALSE\\t9999999999\\tSESSDATA\\t<粘贴值>');
+console.log('---');
 copy(t);
-console.log('已复制到剪贴板！粘贴到 cookies.txt');"""
+console.log('其余 cookie 已复制到剪贴板！');
+"""
 
 
 def main():
