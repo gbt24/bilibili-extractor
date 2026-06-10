@@ -2,17 +2,96 @@
 
 import json
 import os
+import platform
+import shutil
 import subprocess
 import re
 
 
-def get_video_id(url: str) -> str:
-    """Extract BV/av id from bilibili URL, including part number if multi-P video.
+# ── Browser cookie auto-detection ──────────────────────────────
 
-    Examples:
-        BV1xx → BV1xx
-        BV1xx?p=3 → BV1xx_p3
-    """
+def _detect_browser() -> str | None:
+    """Detect an installed browser with Bilibili cookies."""
+    candidates = {
+        "Darwin": ["chrome", "safari", "firefox", "edge"],
+        "Windows": ["chrome", "edge", "firefox", "brave"],
+        "Linux": ["chrome", "firefox", "edge", "brave"],
+    }
+    system = platform.system()
+
+    # Prefer env override
+    env_browser = os.environ.get("YTDLP_COOKIES_BROWSER", "")
+    if env_browser:
+        return env_browser
+
+    for browser in candidates.get(system, ["chrome"]):
+        if _browser_available(browser):
+            return browser
+    return None
+
+
+def _browser_available(browser: str) -> bool:
+    """Check if a browser likely exists on this system."""
+    system = platform.system()
+    if system == "Windows":
+        paths = {
+            "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            "brave": r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        }
+        return os.path.isfile(paths.get(browser, ""))
+    if system == "Darwin":
+        paths = {
+            "chrome": "/Applications/Google Chrome.app",
+            "safari": "/Applications/Safari.app",
+            "firefox": "/Applications/Firefox.app",
+            "edge": "/Applications/Microsoft Edge.app",
+        }
+        return os.path.isdir(paths.get(browser, ""))
+    # Linux: just try it
+    return True
+
+
+# ── yt-dlp command builder ─────────────────────────────────────
+
+_YTDLP_BASE = None
+
+
+def _get_ytdlp_base(cookies_browser: str | None = None) -> list[str]:
+    """Build base yt-dlp command with cookies and headers."""
+    global _YTDLP_BASE
+    if _YTDLP_BASE is not None:
+        return _YTDLP_BASE
+
+    browser = cookies_browser or _detect_browser()
+    cmd = ["yt-dlp"]
+
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+
+    cmd += [
+        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "--add-header", "Referer:https://www.bilibili.com/",
+        "--extractor-retries", "3",
+    ]
+    _YTDLP_BASE = cmd
+    return cmd
+
+
+def set_cookies_browser(browser: str | None) -> None:
+    """Override the auto-detected cookies browser. Call before any other function."""
+    global _YTDLP_BASE
+    if browser:
+        _YTDLP_BASE = _get_ytdlp_base(browser)
+    else:
+        _YTDLP_BASE = None
+
+
+# ── URL helpers ─────────────────────────────────────────────────
+
+def get_video_id(url: str) -> str:
+    """Extract BV/av id from bilibili URL, including part number if multi-P video."""
     m = re.search(r"(BV[a-zA-Z0-9]+)", url)
     if m:
         bv = m.group(1)
@@ -37,10 +116,11 @@ def get_bv_id(url: str) -> str:
     return url.split("/")[-1].split("?")[0]
 
 
+# ── Core API ────────────────────────────────────────────────────
+
 def get_video_info(url: str) -> dict:
-    """Fetch video metadata (title, duration, id) without downloading."""
-    cmd = [
-        "yt-dlp",
+    """Fetch video metadata without downloading."""
+    cmd = _get_ytdlp_base() + [
         "--dump-json",
         "--no-download",
         "--no-playlist",
@@ -48,7 +128,15 @@ def get_video_info(url: str) -> dict:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp info failed: {result.stderr.strip()}")
+        msg = result.stderr.strip()
+        if "412" in msg or "Precondition" in msg:
+            raise RuntimeError(
+                f"Bilibili blocked the request (412). "
+                f"Make sure you are logged into Bilibili in Chrome/Edge, then retry.\n"
+                f"You can also specify a browser: python pipeline.py --cookies-browser chrome\n"
+                f"Details: {msg}"
+            )
+        raise RuntimeError(f"yt-dlp info failed: {msg}")
 
     info = json.loads(result.stdout)
     return {
@@ -66,8 +154,7 @@ def download_audio(url: str, output_dir: str) -> str:
     output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
     expected = os.path.join(output_dir, f"{video_id}.wav")
 
-    cmd = [
-        "yt-dlp",
+    cmd = _get_ytdlp_base() + [
         "-x",
         "--audio-format", "wav",
         "--audio-quality", "0",
@@ -81,11 +168,9 @@ def download_audio(url: str, output_dir: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"Audio download failed: {result.stderr.strip()}")
 
-    # yt-dlp with -x may produce .opus → .wav, the output template handles this
     if os.path.isfile(expected):
         return expected
 
-    # search for the output file if naming differs
     for f in os.listdir(output_dir):
         if f.startswith(video_id) and f.endswith(".wav"):
             return os.path.join(output_dir, f)
@@ -96,37 +181,16 @@ def download_audio(url: str, output_dir: str) -> str:
 def get_stream_url(url: str, max_height: int = 720) -> str:
     """Get a direct video-stream URL at or below max_height pixels."""
     fmt = f"bestvideo[height<={max_height}]/best[height<={max_height}]/best"
-    cmd = ["yt-dlp", "-g", "-f", fmt, "--no-playlist", url]
+    cmd = _get_ytdlp_base() + ["-g", "-f", fmt, "--no-playlist", url]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Stream URL failed: {result.stderr.strip()}")
     return result.stdout.strip().split("\n")[0]
 
 
-_COLLECTION_PATTERNS = [
-    r"collectiondetail",
-    r"channel/collection",
-    r"medialist/play",
-    r"/series/",
-    r"space\.bilibili\.com/\d+/channel",
-]
-
-
-def is_collection_url(url: str) -> bool:
-    """Check whether a URL is a bilibili collection/playlist/series."""
-    return any(re.search(p, url) for p in _COLLECTION_PATTERNS)
-
-
 def expand_url(url: str) -> list[str]:
-    """Expand any bilibili URL into individual video page URLs.
-
-    Works for:
-      - Multi-part videos (same BV, different ?p=N)
-      - Collections/playlists
-      - Standalone videos (returns [url])
-    """
-    cmd = [
-        "yt-dlp",
+    """Expand any bilibili URL into individual video page URLs."""
+    cmd = _get_ytdlp_base() + [
         "--flat-playlist",
         "--print", "%(webpage_url)s",
         "--no-download",

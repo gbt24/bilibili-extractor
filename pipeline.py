@@ -26,6 +26,7 @@ from src.bilibili import (
     get_video_id,
     get_bv_id,
     expand_url,
+    set_cookies_browser,
 )
 from src.transcribe import transcribe, read_srt
 from src.frames import extract_frames
@@ -79,6 +80,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-vision", action="store_true",
         help="Skip multimodal vision description (faster, cheaper)",
+    )
+    p.add_argument(
+        "--cookies-browser", default=None,
+        help="Browser to extract Bilibili cookies from (chrome, edge, firefox, safari)",
     )
     return p.parse_args()
 
@@ -290,6 +295,9 @@ def process_video(
 
 def main() -> None:
     args = parse_args()
+
+    set_cookies_browser(args.cookies_browser)
+
     cfg = load_config(
         model_path=args.model_path,
         model_dir=args.model_dir,
