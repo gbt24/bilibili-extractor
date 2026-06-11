@@ -1,9 +1,11 @@
-"""Video keyframe extraction — downloads small temp video for reliable extraction."""
+"""Video keyframe extraction — downloads video stream then extracts frames via ffmpeg."""
 
 import os
+import re
 import subprocess
 import tempfile
 
+import httpx
 from PIL import Image
 import imagehash
 
@@ -16,48 +18,31 @@ def extract_frames(
 ) -> list[str]:
     """Extract frames from a Bilibili video at fixed interval.
 
-    Downloads a low-res video temp file (~10-25 MB for 7-min video)
-    for reliable extraction, then deletes it immediately.
+    Uses bilibili-api-python to get stream URL, downloads via httpx.
     """
-    from src.bilibili import _COOKIE_BROWSER, _COOKIE_FILE, _HEADER_ARGS
-
     os.makedirs(output_dir, exist_ok=True)
     pattern = os.path.join(output_dir, "frame_%04d.jpg")
 
-    # Build yt-dlp command with cookies / headers
-    ytdlp = ["yt-dlp", "--no-playlist", "--no-mtime"]
-    if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
-        ytdlp += ["--cookies", _COOKIE_FILE]
-    elif _COOKIE_BROWSER:
-        ytdlp += ["--cookies-from-browser", _COOKIE_BROWSER]
-    ytdlp += _HEADER_ARGS
+    # Get stream URL
+    from src.bilibili import get_video_stream_url, _run_async
 
-    # Download smallest usable video stream as temp file
-    import uuid
-    tmp_video = os.path.join(tempfile.gettempdir(), f"bili_{uuid.uuid4().hex}.mp4")
+    stream_url = _run_async(get_video_stream_url(bilibili_url, max_height=480))
+
+    # Download video to temp file
+    fd, tmp_video = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
 
     try:
-        dl = subprocess.run(
-            ytdlp + [
-                "-f", "worstvideo[height<=480]+worstaudio/worst[height<=480]",
-                "-o", tmp_video,
-                bilibili_url,
-            ],
-            capture_output=True, text=True, timeout=300,
-        )
-        if dl.returncode != 0:
-            # Fallback: try just worstvideo without audio
-            dl2 = subprocess.run(
-                ytdlp + [
-                    "-f", "worstvideo[height<=480]",
-                    "-o", tmp_video,
-                    bilibili_url,
-                ],
-                capture_output=True, text=True, timeout=300,
-            )
-            if dl2.returncode != 0:
-                stderr = (dl.stderr + dl2.stderr).strip()[:300]
-                raise RuntimeError(f"Download failed: {stderr}")
+        print(f"        Downloading video stream...")
+        with httpx.stream("GET", stream_url, follow_redirects=True, timeout=300,
+                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                                  "Referer": "https://www.bilibili.com/"}) as r:
+            r.raise_for_status()
+            with open(tmp_video, "wb") as f:
+                for chunk in r.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+        sz = os.path.getsize(tmp_video)
+        print(f"        Downloaded {sz/1e6:.1f} MB")
 
         # Extract frames from temp video
         ffmpeg = subprocess.run([

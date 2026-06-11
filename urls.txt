@@ -5,3 +5,5 @@
 # 支持合集/播放列表链接（会自动展开为所有视频并合并结果）：
 #   https://space.bilibili.com/123456/channel/collectiondetail?sid=789
 #   https://www.bilibili.com/medialist/play/123456?business_id=789
+
+https://www.bilibili.com/video/BV1FdetzEEVA/?spm_id_from=333.337.search-card.all.click&vd_source=15a30d6396d6776a92436a15f27dd5c7

@@ -1,131 +1,26 @@
-"""Bilibili video access via yt-dlp — audio download, stream URL, metadata."""
+"""Bilibili video access via bilibili-api-python — no yt-dlp, no cookies."""
 
+import asyncio
 import json
 import os
-import platform
 import re
-import shutil
 import subprocess
 import tempfile
+from pathlib import Path
+
+import httpx
+from bilibili_api import Credential, video
+
+_CREDENTIAL: Credential | None = None
 
 
-# ── Browser / cookie detection ──────────────────────────────────
-
-def _detect_browser() -> str | None:
-    candidates = {
-        "Darwin": ["chrome", "safari", "firefox", "edge"],
-        "Windows": ["chrome", "edge", "firefox", "brave"],
-        "Linux": ["chrome", "firefox", "edge", "brave"],
-    }
-    system = platform.system()
-    env_browser = os.environ.get("YTDLP_COOKIES_BROWSER", "")
-    if env_browser:
-        return env_browser
-    for browser in candidates.get(system, ["chrome"]):
-        if _browser_available(browser):
-            return browser
-    return None
+def set_credential(cred: Credential) -> None:
+    global _CREDENTIAL
+    _CREDENTIAL = cred
 
 
-def _browser_available(browser: str) -> bool:
-    system = platform.system()
-    if system == "Windows":
-        paths = {
-            "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
-            "brave": r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-        }
-        return os.path.isfile(paths.get(browser, ""))
-    if system == "Darwin":
-        paths = {
-            "chrome": "/Applications/Google Chrome.app",
-            "safari": "/Applications/Safari.app",
-            "firefox": "/Applications/Firefox.app",
-            "edge": "/Applications/Microsoft Edge.app",
-        }
-        return os.path.isdir(paths.get(browser, ""))
-    return True
-
-
-# ── yt-dlp runner ───────────────────────────────────────────────
-
-_COOKIE_BROWSER: str | None = None
-_COOKIE_FILE: str | None = None
-
-_HEADER_ARGS = [
-    "--add-header",
-    "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "--add-header", "Referer:https://www.bilibili.com/",
-]
-
-_BYPASS_ARGS = ["--force-ipv4"]
-
-
-def set_cookies_browser(browser: str | None) -> None:
-    global _COOKIE_BROWSER
-    _COOKIE_BROWSER = browser
-
-
-def set_cookies_file(path: str | None) -> None:
-    global _COOKIE_FILE
-    _COOKIE_FILE = path
-
-
-def _build_cmd(args: list[str]) -> list[str]:
-    """Build yt-dlp command with the best available auth method."""
-    cmd = ["yt-dlp"]
-
-    # Priority: cookie file → browser cookies → nothing (headers only)
-    if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
-        # Copy to temp — yt-dlp writes back to the file, which would corrupt it
-        _COOKIE_FILE_COPY = os.path.join(
-            tempfile.gettempdir(), "bili_cookies_" + os.path.basename(_COOKIE_FILE)
-        )
-        shutil.copy2(_COOKIE_FILE, _COOKIE_FILE_COPY)
-        cmd += ["--cookies", _COOKIE_FILE_COPY]
-    elif _COOKIE_BROWSER or _detect_browser():
-        browser = _COOKIE_BROWSER or _detect_browser()
-        cmd += ["--cookies-from-browser", browser]
-
-    return cmd + _HEADER_ARGS + _BYPASS_ARGS + args
-
-
-def _run_ytdlp(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run yt-dlp with best auth, retrying with less auth on failure."""
-    cmd = _build_cmd(args)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode == 0:
-        return result
-
-    stderr = result.stderr.strip()
-
-    # Cookie DB locked → retry without browser cookies (use cookie file or headers)
-    if "cookie" in stderr.lower() or "locked" in stderr.lower():
-        print(f"        Cookie DB locked, retrying without browser cookies...")
-        cmd2 = ["yt-dlp"] + _HEADER_ARGS + _BYPASS_ARGS + args
-        if _COOKIE_FILE and os.path.isfile(_COOKIE_FILE):
-            cmd2 = ["yt-dlp", "--cookies", _COOKIE_FILE] + _HEADER_ARGS + _BYPASS_ARGS + args
-        result = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout)
-        if result.returncode == 0:
-            return result
-        stderr = result.stderr.strip()
-
-    # 412 / blocked
-    if "412" in stderr or "Precondition" in stderr:
-        raise RuntimeError(
-            "Bilibili blocked the request (412). Solutions:\n"
-            "  1. Close Chrome/Edge COMPLETELY, then run:\n"
-            "     python pipeline.py --cookies-browser chrome\n"
-            "  2. Or export cookies as txt file:\n"
-            "     Install 'Get cookies.txt LOCALLY' browser extension\n"
-            "     Export bilibili.com cookies → cookies.txt\n"
-            "     python pipeline.py --cookies-file cookies.txt\n"
-            f"  Details: {stderr}"
-        )
-
-    raise RuntimeError(f"yt-dlp failed: {stderr}")
+def _cred() -> Credential | None:
+    return _CREDENTIAL  # None for public videos is OK
 
 
 # ── URL helpers ─────────────────────────────────────────────────
@@ -153,52 +48,146 @@ def get_bv_id(url: str) -> str:
     return url.split("/")[-1].split("?")[0]
 
 
-# ── Core API ────────────────────────────────────────────────────
+# ── Core async API ──────────────────────────────────────────────
 
-def get_video_info(url: str) -> dict:
-    result = _run_ytdlp(["--dump-json", "--no-download", "--no-playlist", url])
-    info = json.loads(result.stdout)
+async def _get_video(bv_id: str) -> video.Video:
+    return video.Video(bvid=bv_id, credential=_cred())
+
+
+async def get_video_info(url: str) -> dict:
+    bv = get_bv_id(url)
+    v = await _get_video(bv)
+    info = await v.get_info()
     return {
-        "id": info.get("id", get_video_id(url)),
+        "id": get_video_id(url),
         "title": info.get("title", ""),
         "duration": info.get("duration", 0),
-        "webpage_url": info.get("webpage_url", url),
-        "description": info.get("description", ""),
+        "webpage_url": f"https://www.bilibili.com/video/{bv}",
+        "description": info.get("desc", ""),
     }
 
 
-def download_audio(url: str, output_dir: str) -> str:
-    video_id = get_video_id(url)
-    output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
-    expected = os.path.join(output_dir, f"{video_id}.wav")
+async def expand_url(url: str) -> list[str]:
+    """Expand a Bilibili URL into individual video page URLs."""
+    bv = get_bv_id(url)
+    v = await _get_video(bv)
 
-    _run_ytdlp([
-        "-x", "--audio-format", "wav", "--audio-quality", "0",
-        "-f", "bestaudio",
-        "-o", output_template,
-        "--no-playlist", "--no-mtime",
-        url,
-    ])
+    try:
+        pages = await v.get_pages()
+    except Exception:
+        return [f"https://www.bilibili.com/video/{bv}"]
 
-    if os.path.isfile(expected):
-        return expected
-    for f in os.listdir(output_dir):
-        if f.startswith(video_id) and f.endswith(".wav"):
-            return os.path.join(output_dir, f)
-    raise FileNotFoundError(f"Audio file not found in {output_dir} for {video_id}")
+    if not pages or len(pages) <= 1:
+        return [f"https://www.bilibili.com/video/{bv}"]
+
+    result = []
+    for i, page in enumerate(pages, 1):
+        result.append(f"https://www.bilibili.com/video/{bv}?p={i}")
+    return result
 
 
-def get_stream_url(url: str, max_height: int = 720) -> str:
-    fmt = f"bestvideo[height<={max_height}]/best[height<={max_height}]/best"
-    result = _run_ytdlp(["-g", "-f", fmt, "--no-playlist", url])
-    return result.stdout.strip().split("\n")[0]
+async def download_audio(url: str, output_dir: str) -> str:
+    """Download audio stream from Bilibili. Returns path to WAV file."""
+    bv = get_bv_id(url)
+    vid = get_video_id(url)
+
+    # Determine page index from URL
+    p_match = re.search(r"[?&]p=(\d+)", url)
+    page_idx = int(p_match.group(1)) - 1 if p_match else 0
+
+    v = await _get_video(bv)
+    dash_data = await v.get_download_url(page_index=page_idx)
+
+    from bilibili_api.video import VideoDownloadURLDataDetecter
+    detector = VideoDownloadURLDataDetecter(data=dash_data)
+    streams = detector.detect_best_streams()
+
+    if not streams:
+        raise RuntimeError(f"No downloadable streams found for {bv}")
+
+    # streams[1] is audio (or streams[0] if no separate audio)
+    audio = None
+    for s in streams:
+        if hasattr(s, "audio_url") and s.audio_url:
+            audio = s.audio_url
+            break
+        if getattr(s, "video_quality", "") == "audio":
+            audio = s.url
+            break
+
+    if audio is None:
+        # Fallback: use the first stream's URL
+        audio = streams[0].url
+
+    # Download to temp mp4 then convert to WAV via ffmpeg
+    tmp_audio = os.path.join(output_dir, f"{vid}.m4a")
+    wav_path = os.path.join(output_dir, f"{vid}.wav")
+
+    # Download
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True, headers=headers) as client:
+        resp = await client.get(audio)
+        resp.raise_for_status()
+        with open(tmp_audio, "wb") as f:
+            f.write(resp.content)
+
+    # Convert to WAV
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", tmp_audio, "-ar", "16000", "-ac", "1", wav_path],
+        capture_output=True, check=True,
+    )
+    os.remove(tmp_audio)
+
+    return wav_path
 
 
-def expand_url(url: str) -> list[str]:
-    result = _run_ytdlp([
-        "--flat-playlist", "--print", "%(webpage_url)s", "--no-download", url,
-    ])
-    urls = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-    if not urls:
-        raise RuntimeError(f"No videos found at: {url}")
-    return urls
+async def get_video_stream_url(url: str, max_height: int = 480) -> str:
+    """Get direct video-only stream URL for frame extraction."""
+    bv = get_bv_id(url)
+    p_match = re.search(r"[?&]p=(\d+)", url)
+    page_idx = int(p_match.group(1)) - 1 if p_match else 0
+
+    v = await _get_video(bv)
+    dash_data = await v.get_download_url(page_index=page_idx)
+
+    from bilibili_api.video import VideoDownloadURLDataDetecter
+    detector = VideoDownloadURLDataDetecter(data=dash_data)
+    streams = detector.detect_best_streams()
+
+    # Pick first video stream
+    for s in streams:
+        if hasattr(s, "video_url") and s.video_url and s.video_quality <= 80:
+            return s.url
+
+    # Fallback
+    return streams[0].url
+
+
+# ── Sync wrappers for pipeline compatibility ────────────────────
+
+def _run_async(coro):
+    """Run an async coroutine synchronously."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+def get_video_info_sync(url: str) -> dict:
+    return _run_async(get_video_info(url))
+
+
+def expand_url_sync(url: str) -> list[str]:
+    return _run_async(expand_url(url))
+
+
+def download_audio_sync(url: str, output_dir: str) -> str:
+    return _run_async(download_audio(url, output_dir))

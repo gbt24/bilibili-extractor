@@ -2,31 +2,29 @@
 """Main pipeline: Bilibili video problem extraction.
 
 Usage:
-    python pipeline.py                          # reads urls.txt
-    python pipeline.py --urls my_urls.txt       # custom URL list
-    python pipeline.py --model-path /path/to/model.bin
+    python pipeline.py                          # reads urls.txt, QR-login on first run
+    python pipeline.py --urls my_urls.txt
     python pipeline.py --resume                 # skip already-processed videos
 """
 
 import argparse
+import asyncio
 import json
 import os
 import re
 import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 from src.config import load_config, RuntimeConfig
 from src.bilibili import (
-    get_video_info,
-    download_audio,
+    get_video_info_sync,
+    download_audio_sync,
+    expand_url_sync,
     get_video_id,
     get_bv_id,
-    expand_url,
-    set_cookies_browser,
-    set_cookies_file,
+    set_credential,
 )
 from src.transcribe import transcribe, read_srt
 from src.frames import extract_frames
@@ -47,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--model-path", default=None,
-        help="Path to whisper.cpp model (.bin) or faster-whisper model name (e.g. large-v3)",
+        help="Path to whisper.cpp model (.bin) or faster-whisper model name",
     )
     p.add_argument(
         "--model-dir", default=None,
@@ -81,29 +79,17 @@ def parse_args() -> argparse.Namespace:
         "--no-vision", action="store_true",
         help="Skip multimodal vision description (faster, cheaper)",
     )
-    p.add_argument(
-        "--cookies-browser", default=None,
-        help="Browser to extract Bilibili cookies from (chrome, edge, firefox, safari)",
-    )
-    p.add_argument(
-        "--cookies-file", default=None,
-        help="Path to Netscape-format cookie file (export from browser extension)",
-    )
+    # Legacy args (ignored, kept for compatibility)
+    p.add_argument("--cookies-browser", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--cookies-file", default=None, help=argparse.SUPPRESS)
     return p.parse_args()
 
 
 def _sanitize_filename(name: str) -> str:
-    """Strip characters that are unsafe in file names."""
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip()[:100]
 
 
 def read_and_expand_urls(path: str) -> list[dict]:
-    """Read urls.txt, expand all URLs, detect multi-video groupings.
-
-    - Multi-part videos (same BV, ?p=1..N)  → grouped by BV number
-    - Collection/playlist URLs               → grouped by collection id
-    - Standalone single videos               → ungrouped
-    """
     raw_urls: list[str] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -119,13 +105,12 @@ def read_and_expand_urls(path: str) -> list[dict]:
     for url in raw_urls:
         print(f"  Expanding: {url[:80]}...")
         try:
-            video_urls = expand_url(url)
+            video_urls = expand_url_sync(url)
         except Exception as exc:
             print(f"    WARNING: {exc}")
             video_urls = [url]
 
         if len(video_urls) > 1:
-            # Multi-video: determine group name
             group = _derive_group_name(url)
             print(f"    → {len(video_urls)} videos  (group: {group})")
             for vurl in video_urls:
@@ -142,16 +127,12 @@ def read_and_expand_urls(path: str) -> list[dict]:
 
 
 def _derive_group_name(url: str) -> str:
-    """Derive a group identifier from the URL for merged output."""
-    # Collection/detail URLs: extract sid
     m = re.search(r"sid=(\d+)", url)
     if m:
         return m.group(1)
-    # Medialist URLs
     m = re.search(r"business_id=(\d+)", url)
     if m:
         return m.group(1)
-    # Multi-part video: use BV number
     bv = get_bv_id(url)
     if bv:
         return bv
@@ -159,8 +140,7 @@ def _derive_group_name(url: str) -> str:
 
 
 def already_processed(video_id: str) -> bool:
-    result_path = OUTPUT_DIR / f"{video_id}.json"
-    return result_path.exists()
+    return (OUTPUT_DIR / f"{video_id}.json").exists()
 
 
 def process_video(
@@ -169,7 +149,6 @@ def process_video(
     args: argparse.Namespace,
     vid_work_dir: Path,
 ) -> dict | None:
-    """Run the full pipeline for a single video. Returns the result dict or None."""
     video_id = get_video_id(url)
     print(f"\n{'='*60}")
     print(f"  Processing: {video_id}")
@@ -178,7 +157,7 @@ def process_video(
     # ── 1. Metadata ──────────────────────────────────────────
     print("  [1/7] Fetching video info...")
     try:
-        info = get_video_info(url)
+        info = get_video_info_sync(url)
         print(f"        Title: {info['title']}")
         print(f"        Duration: {info['duration']:.0f}s")
     except Exception as e:
@@ -188,13 +167,13 @@ def process_video(
     # ── 2. Audio → Whisper ───────────────────────────────────
     print("  [2/7] Downloading audio...")
     try:
-        audio_path = download_audio(url, str(vid_work_dir))
-        print(f"        Audio: {audio_path}  ({os.path.getsize(audio_path)/1e6:.1f} MB)")
+        audio_path = download_audio_sync(url, str(vid_work_dir))
+        print(f"        Audio: {os.path.getsize(audio_path)/1e6:.1f} MB")
     except Exception as e:
         print(f"        ERROR: {e}")
         return None
 
-    print("  [3/7] Transcribing with whisper.cpp...")
+    print("  [3/7] Transcribing...")
     t0 = time.time()
     try:
         srt_path = transcribe(
@@ -213,7 +192,7 @@ def process_video(
     print(f"        Transcript: {len(transcript)} chars")
 
     # ── 3. Frames → OCR + Vision ──────────────────────────────
-    print("  [4/7] Extracting frames from stream...")
+    print("  [4/7] Extracting frames...")
     frames_dir = vid_work_dir / "frames"
     frames_dir.mkdir(exist_ok=True)
     try:
@@ -232,10 +211,9 @@ def process_video(
         try:
             ocr_results = recognize_frames(frame_paths, device=cfg.ocr_device)
             ocr_text = format_ocr_results(ocr_results)
-            print(f"        Done in {time.time()-t0:.1f}s, {len(ocr_text)} chars of text")
+            print(f"        Done in {time.time()-t0:.1f}s, {len(ocr_text)} chars")
         except Exception as e:
             print(f"        ERROR: {e}")
-            print("        Continuing with transcript only...")
 
         if not args.no_vision:
             print("  [6/7] Running multimodal vision model...")
@@ -246,13 +224,11 @@ def process_video(
                 print(f"        Done in {time.time()-t0:.1f}s, {len(vision_text)} chars")
             except Exception as e:
                 print(f"        ERROR: {e}")
-                print("        Continuing without vision descriptions...")
         else:
             print("  [6/7] Vision model skipped (--no-vision)")
     else:
         print("  [5/7] No frames to process, skipping...")
 
-    # Clean up frames
     shutil.rmtree(frames_dir, ignore_errors=True)
 
     # ── 4. DeepSeek fusion ───────────────────────────────────
@@ -287,7 +263,6 @@ def process_video(
     )
     print(f"        Saved → {output_path}")
 
-    # Clean up SRT
     try:
         os.remove(srt_path)
     except OSError:
@@ -299,8 +274,15 @@ def process_video(
 def main() -> None:
     args = parse_args()
 
-    set_cookies_browser(args.cookies_browser)
-    set_cookies_file(args.cookies_file)
+    # ── Login (optional for public videos) ────────────────────
+    from src.bilibili_auth import get_credential, _load_credential
+    cred = _load_credential()
+    if cred:
+        print("B站登录态已加载")
+    else:
+        print("未登录（公开视频不需要登录，付费课程请运行 python login.py）")
+    set_credential(cred)
+    print()
 
     cfg = load_config(
         model_path=args.model_path,
@@ -348,13 +330,11 @@ def main() -> None:
         else:
             failed += 1
 
-    # ── Merge collection results ──────────────────────────────
     if not args.no_merge and results_by_group:
         print(f"\n{'='*60}")
         print("  Merging collection results...")
         OUTPUT_DIR.mkdir(exist_ok=True)
         for group, vids in results_by_group.items():
-            # Sort by video id to preserve playlist order
             vids.sort(key=lambda v: v["video_id"])
             all_problems: list[dict] = []
             for v in vids:
