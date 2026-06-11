@@ -111,12 +111,18 @@ async def download_audio(url: str, output_dir: str) -> str:
     tmp_audio = os.path.join(output_dir, f"{vid}.m4a")
     wav_path = os.path.join(output_dir, f"{vid}.wav")
 
-    # Download
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://www.bilibili.com/",
+        "Origin": "https://www.bilibili.com",
     }
-    async with httpx.AsyncClient(timeout=300, follow_redirects=True, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=300,
+        follow_redirects=True,
+        headers=headers,
+        proxy=None,
+        trust_env=False,
+    ) as client:
         resp = await client.get(audio)
         resp.raise_for_status()
         with open(tmp_audio, "wb") as f:

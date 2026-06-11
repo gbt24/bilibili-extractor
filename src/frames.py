@@ -34,9 +34,16 @@ def extract_frames(
 
     try:
         print(f"        Downloading video stream...")
-        with httpx.stream("GET", stream_url, follow_redirects=True, timeout=300,
-                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                  "Referer": "https://www.bilibili.com/"}) as r:
+        with httpx.stream(
+            "GET", stream_url, follow_redirects=True, timeout=300,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.bilibili.com/",
+                "Origin": "https://www.bilibili.com",
+            },
+            proxy=None,
+            trust_env=False,
+        ) as r:
             r.raise_for_status()
             with open(tmp_video, "wb") as f:
                 for chunk in r.iter_bytes(chunk_size=8192):
