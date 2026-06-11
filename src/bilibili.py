@@ -70,6 +70,11 @@ async def get_video_info(url: str) -> dict:
 async def expand_url(url: str) -> list[str]:
     """Expand a Bilibili URL into individual video page URLs."""
     bv = get_bv_id(url)
+
+    p_match = re.search(r"[?&]p=(\d+)", url)
+    if p_match:
+        return [f"https://www.bilibili.com/video/{bv}?p={p_match.group(1)}"]
+
     v = await _get_video(bv)
 
     try:

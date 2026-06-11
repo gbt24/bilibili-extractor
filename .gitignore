@@ -27,3 +27,6 @@ Thumbs.db
 
 # Env
 .env
+
+# Memory
+MEMORY.md
