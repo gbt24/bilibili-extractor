@@ -76,8 +76,8 @@ def parse_args() -> argparse.Namespace:
         help="Do not merge collection results into a single JSON",
     )
     p.add_argument(
-        "--no-vision", action="store_true",
-        help="Skip multimodal vision description (faster, cheaper)",
+        "--vision", action="store_true",
+        help="Enable multimodal vision description (slower, better for charts/graphs)",
     )
     # Legacy args (ignored, kept for compatibility)
     p.add_argument("--cookies-browser", default=None, help=argparse.SUPPRESS)
@@ -215,7 +215,7 @@ def process_video(
         except Exception as e:
             print(f"        ERROR: {e}")
 
-        if not args.no_vision:
+        if args.vision:
             print("  [6/7] Running multimodal vision model...")
             t0 = time.time()
             try:
@@ -225,7 +225,7 @@ def process_video(
             except Exception as e:
                 print(f"        ERROR: {e}")
         else:
-            print("  [6/7] Vision model skipped (--no-vision)")
+            print("  [6/7] Vision model skipped (use --vision to enable)")
     else:
         print("  [5/7] No frames to process, skipping...")
 
