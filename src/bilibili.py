@@ -105,19 +105,14 @@ async def download_audio(url: str, output_dir: str) -> str:
     if not streams:
         raise RuntimeError(f"No downloadable streams found for {bv}")
 
-    # streams[1] is audio (or streams[0] if no separate audio)
+    # Extract audio URL from DASH data directly
     audio = None
-    for s in streams:
-        if hasattr(s, "audio_url") and s.audio_url:
-            audio = s.audio_url
-            break
-        if getattr(s, "video_quality", "") == "audio":
-            audio = s.url
-            break
-
-    if audio is None:
-        # Fallback: use the first stream's URL
-        audio = streams[0].url
+    dash = dash_data.get("dash", {})
+    audio_list = dash.get("audio", [])
+    if audio_list:
+        # Pick highest quality audio
+        best_audio = max(audio_list, key=lambda a: a.get("bandwidth", 0))
+        audio = best_audio.get("base_url") or best_audio.get("baseUrl", "")
 
     # Download to temp mp4 then convert to WAV via ffmpeg
     tmp_audio = os.path.join(output_dir, f"{vid}.m4a")
@@ -157,12 +152,15 @@ async def get_video_stream_url(url: str, max_height: int = 480) -> str:
     detector = VideoDownloadURLDataDetecter(data=dash_data)
     streams = detector.detect_best_streams()
 
-    # Pick first video stream
-    for s in streams:
-        if hasattr(s, "video_url") and s.video_url and s.video_quality <= 80:
-            return s.url
+    # Get video-only stream from DASH data
+    dash = dash_data.get("dash", {})
+    video_list = dash.get("video", [])
+    if video_list:
+        # Pick video at or below max_height
+        suitable = [v for v in video_list if v.get("height", 9999) <= max_height]
+        best_video = min(suitable, key=lambda v: v.get("height", 9999)) if suitable else video_list[0]
+        return best_video.get("base_url") or best_video.get("baseUrl", "")
 
-    # Fallback
     return streams[0].url
 
 
