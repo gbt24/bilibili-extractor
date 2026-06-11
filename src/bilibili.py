@@ -39,7 +39,7 @@ def get_video_id(url: str) -> str:
 
 
 def get_bv_id(url: str) -> str:
-    m = re.search(r"(BV[a-zA-Z0-9]+)", url)
+    m = re.search(r"(BV[a-zA-Z0-9]{10})", url)
     if m:
         return m.group(1)
     m = re.search(r"av(\d+)", url)
@@ -98,23 +98,16 @@ async def download_audio(url: str, output_dir: str) -> str:
     v = await _get_video(bv)
     dash_data = await v.get_download_url(page_index=page_idx)
 
-    from bilibili_api.video import VideoDownloadURLDataDetecter
-    detector = VideoDownloadURLDataDetecter(data=dash_data)
-    streams = detector.detect_best_streams()
-
-    if not streams:
-        raise RuntimeError(f"No downloadable streams found for {bv}")
-
-    # Extract audio URL from DASH data directly
-    audio = None
     dash = dash_data.get("dash", {})
     audio_list = dash.get("audio", [])
-    if audio_list:
-        # Pick highest quality audio
-        best_audio = max(audio_list, key=lambda a: a.get("bandwidth", 0))
-        audio = best_audio.get("base_url") or best_audio.get("baseUrl", "")
+    if not audio_list:
+        raise RuntimeError(f"No audio streams found for {bv}")
 
-    # Download to temp mp4 then convert to WAV via ffmpeg
+    best_audio = max(audio_list, key=lambda a: a.get("bandwidth", 0))
+    audio = best_audio.get("base_url") or best_audio.get("baseUrl", "")
+    if not audio:
+        raise RuntimeError(f"No audio URL found for {bv}")
+
     tmp_audio = os.path.join(output_dir, f"{vid}.m4a")
     wav_path = os.path.join(output_dir, f"{vid}.wav")
 
@@ -148,20 +141,18 @@ async def get_video_stream_url(url: str, max_height: int = 480) -> str:
     v = await _get_video(bv)
     dash_data = await v.get_download_url(page_index=page_idx)
 
-    from bilibili_api.video import VideoDownloadURLDataDetecter
-    detector = VideoDownloadURLDataDetecter(data=dash_data)
-    streams = detector.detect_best_streams()
-
-    # Get video-only stream from DASH data
     dash = dash_data.get("dash", {})
     video_list = dash.get("video", [])
     if video_list:
-        # Pick video at or below max_height
-        suitable = [v for v in video_list if v.get("height", 9999) <= max_height]
-        best_video = min(suitable, key=lambda v: v.get("height", 9999)) if suitable else video_list[0]
-        return best_video.get("base_url") or best_video.get("baseUrl", "")
+        suitable = sorted(video_list, key=lambda v: v.get("height", 0) if v.get("height") else 0)
+        for v in reversed(suitable):
+            h = v.get("height")
+            if h and h <= max_height:
+                return v.get("base_url") or v.get("baseUrl", "")
+        best = suitable[-1]
+        return best.get("base_url") or best.get("baseUrl", "")
 
-    return streams[0].url
+    raise RuntimeError(f"No video streams found for {bv}")
 
 
 # ── Sync wrappers for pipeline compatibility ────────────────────
